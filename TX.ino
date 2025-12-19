@@ -1,13 +1,24 @@
 /*
   Controle de Bomba d'Água via LoRa
-  Módulo TX - Transmissor
-  MCU: Heltec WiFi LoRa 32 (V2)
+  Módulo TX - Heltec WiFi LoRa 32 V2
 */
 
 #include <SPI.h>
 #include <LoRa.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
-/* ================== PINOS HELTEC LORA32 V2 ================== */
+/* ================== OLED ================== */
+#define OLED_SDA 4
+#define OLED_SCL 15
+#define OLED_RST 16
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
+
+/* ================== LORA ================== */
 #define LORA_SCK   5
 #define LORA_MISO  19
 #define LORA_MOSI  27
@@ -20,7 +31,7 @@
 
 /* ================== APLICAÇÃO ================== */
 #define BUTTON_PIN   13
-#define ACK_TIMEOUT  1000  // ms
+#define ACK_TIMEOUT  1000
 
 #define STX 0xAA
 #define ETX 0x55
@@ -41,25 +52,49 @@ typedef struct __attribute__((packed)) {
 
 enum TxState {
   TX_IDLE,
-  TX_SEND,
   TX_WAIT_ACK,
   TX_SUCCESS,
   TX_TIMEOUT
 };
 
 TxState txState = TX_IDLE;
-
 uint8_t seq = 0;
 unsigned long t0;
 
 /* ================== FUNÇÕES ================== */
+
+void oledPrint(const char* msg) {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println(msg);
+  display.display();
+}
+
+bool initOLED() {
+  pinMode(OLED_RST, OUTPUT);
+  digitalWrite(OLED_RST, LOW);
+  delay(20);
+  digitalWrite(OLED_RST, HIGH);
+
+  Wire.begin(OLED_SDA, OLED_SCL);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    return false;
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  oledPrint("OLED OK");
+  return true;
+}
 
 bool initLoRa() {
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
   LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
 
   if (!LoRa.begin(LORA_BAND)) {
-    Serial.println("[TX] Falha ao iniciar LoRa");
+    oledPrint("Erro LoRa");
     return false;
   }
 
@@ -69,7 +104,7 @@ bool initLoRa() {
   LoRa.setSignalBandwidth(125E3);
   LoRa.setCodingRate4(5);
 
-  Serial.println("[TX] LoRa inicializado");
+  oledPrint("LoRa OK");
   return true;
 }
 
@@ -80,7 +115,7 @@ void sendCommand(uint8_t cmd) {
   LoRa.write((uint8_t*)&pkt, sizeof(pkt));
   LoRa.endPacket();
 
-  Serial.println("[TX] Comando enviado");
+  oledPrint("Comando enviado");
 }
 
 bool receiveAck() {
@@ -92,11 +127,7 @@ bool receiveAck() {
   if (pkt.stx != STX || pkt.etx != ETX) return false;
   if (pkt.seq != seq) return false;
 
-  if (pkt.cmd == ACK_ON || pkt.cmd == ACK_OFF) {
-    return true;
-  }
-
-  return false;
+  return (pkt.cmd == ACK_ON || pkt.cmd == ACK_OFF);
 }
 
 /* ================== SETUP ================== */
@@ -105,17 +136,22 @@ void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT);
 
+  if (!initOLED()) {
+    Serial.println("Falha OLED");
+    while (1);
+  }
+
   while (!initLoRa());
 }
 
 /* ================== LOOP ================== */
 
 void loop() {
-
   switch (txState) {
 
     case TX_IDLE:
-      if (digitalRead(BUTTON_PIN) == HIGH) {
+      oledPrint("Aguardando botao");
+      if (digitalRead(BUTTON_PIN)) {
         seq++;
         sendCommand(CMD_ON);
         t0 = millis();
@@ -134,12 +170,14 @@ void loop() {
       break;
 
     case TX_SUCCESS:
-      Serial.println("[TX] ACK recebido. Bomba acionada.");
+      oledPrint("ACK recebido");
+      delay(500);//remover dps
       txState = TX_IDLE;
       break;
 
     case TX_TIMEOUT:
-      Serial.println("[TX] Timeout. Sem ACK.");
+      oledPrint("Timeout ACK");
+      delay(500);//remover dps
       txState = TX_IDLE;
       break;
   }
