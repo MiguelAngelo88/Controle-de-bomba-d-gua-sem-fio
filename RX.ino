@@ -1,11 +1,14 @@
 /*
   Controle de Bomba d'Água via LoRa
-  Módulo RX - Receptor
-  Hardware: Heltec WiFi LoRa 32 (V2)
+  Módulo RX - Heltec WiFi LoRa 32 (V2)
 */
 
 #include <SPI.h>
 #include <LoRa.h>
+#include <esp_task_wdt.h>
+
+/* ================== WATCHDOG ================== */
+#define WDT_TIMEOUT 5   // segundos
 
 /* ================== PINOS HELTEC LORA32 V2 ================== */
 #define LORA_SCK   5
@@ -91,12 +94,18 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW);
 
+  /* Watchdog */
+  esp_task_wdt_init(WDT_TIMEOUT, true); // reset automático
+  esp_task_wdt_add(NULL);               // task loop()
+
   while (!initLoRa());
 }
 
 /* ================== LOOP ================== */
 
 void loop() {
+
+  esp_task_wdt_reset(); // alimenta WDT
 
   switch (rxState) {
 
