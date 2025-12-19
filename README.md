@@ -32,7 +32,7 @@ Sistema embarcado para acionamento remoto de uma bomba d’água utilizando comu
   - Módulo de relé (isolado com optoacoplador)
 
 - **TX**
-  - Botão ou chave de comando
+  - Chave de comando
   - LED de status (opcional)
 
 > ⚠️ Protótipo **não possui pareamento** entre TX/RX nesta versão.
@@ -97,8 +97,13 @@ Pacote simples e determinístico:
 ## Como Compilar e Gravar
 
 1. Instalar **Arduino IDE**
-2. Adicionar suporte ao **ESP32**
-3. Instalar biblioteca LoRa compatível com SX1276
+2. Instalar placas:
+  - Heltec ESP32 Series Dev-Boards
+  - esp32 (versão 2.0.11)
+3. Instalar bibliotecas:
+  - Adafruit GFX Library
+  - Adafruit SSD1306
+  - Heltec ESP32 Dev-Boards
 4. Abrir:
   - `firmware/tx/src/main_tx.ino` para o transmissor
   - `firmware/rx/src/main_rx.ino` para o receptor
