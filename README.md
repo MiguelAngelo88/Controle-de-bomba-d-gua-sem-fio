@@ -2,14 +2,12 @@
 
 Sistema embarcado para acionamento remoto de uma bomba d’água utilizando comunicação **LoRa ponto-a-ponto**, composto por dois módulos independentes: **Transmissor (TX)** e **Receptor (RX)**.
 
-O projeto foi concebido desde o início com foco em **produto**, priorizando robustez, previsibilidade e rastreabilidade de estados.
-
 ---
 
 ## Visão Geral do Sistema
 
 - **TX (Transmissor)**  
-  Operado pelo usuário via botão/chave física.  
+  Operado pelo usuário via chave física.  
   Responsável por enviar comandos de acionamento/desacionamento da bomba.
 
 - **RX (Receptor)**  
@@ -31,8 +29,7 @@ O projeto foi concebido desde o início com foco em **produto**, priorizando rob
   - Frequência: 915 MHz (Brasil)  
 
 - **RX**
-  - Módulo de relé (isolado)
-  - Fonte dedicada para bomba (não compartilhada com lógica)
+  - Módulo de relé (isolado com optoacoplador)
 
 - **TX**
   - Botão ou chave de comando
@@ -97,20 +94,6 @@ Pacote simples e determinístico:
 
 ---
 
-## Estrutura do Repositório
-
-```
-controle-bomba-lora/
-├── docs/           Documentação técnica
-├── hardware/       Esquemáticos e lista de componentes
-├── firmware/
-│   ├── tx/         Código do transmissor
-│   └── rx/         Código do receptor
-└── tests/          Testes e validações
-```
-
----
-
 ## Como Compilar e Gravar
 
 1. Instalar **Arduino IDE**
@@ -128,16 +111,17 @@ controle-bomba-lora/
 
 - [x] Comunicação LoRa básica  
 - [x] FSM TX/RX  
-- [x] ACK de confirmação  
-- [ ] Pareamento  
-- [ ] Criptografia  
+- [x] ACK de confirmação
+- [ ] Watchdog
+- [ ] Fail-safe
+- [ ] Pareamento   
 - [ ] Certificação / Produto final  
 
 ---
 
 ## Observações Importantes
 
-- Este projeto **não substitui** sistemas de segurança industrial.
+
 - Uso em aplicações críticas exige:
  - Watchdog
  - Fail-safe de relé
