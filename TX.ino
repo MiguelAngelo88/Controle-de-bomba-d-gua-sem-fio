@@ -150,7 +150,7 @@ void loop() {
   switch (txState) {
 
     case TX_IDLE:
-      oledPrint("Aguardando botao");
+      oledPrint("Aguardando Comando");
       if (digitalRead(BUTTON_PIN)) {
         seq++;
         sendCommand(CMD_ON);
@@ -170,13 +170,13 @@ void loop() {
       break;
 
     case TX_SUCCESS:
-      oledPrint("ACK recebido");
+      oledPrint("Mensagem recebida");
       delay(500);//remover dps
       txState = TX_IDLE;
       break;
 
     case TX_TIMEOUT:
-      oledPrint("Timeout ACK");
+      oledPrint("Mensagem nao recebida");
       delay(500);//remover dps
       txState = TX_IDLE;
       break;
