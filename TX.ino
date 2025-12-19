@@ -8,6 +8,10 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <esp_task_wdt.h>
+
+/* ================== WATCHDOG ================== */
+#define WDT_TIMEOUT 5   // segundos
 
 /* ================== OLED ================== */
 #define OLED_SDA 4
@@ -32,6 +36,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
 /* ================== APLICAÇÃO ================== */
 #define BUTTON_PIN   13
 #define ACK_TIMEOUT  1000
+#define MSG_HOLD_TIME 1000
 
 #define STX 0xAA
 #define ETX 0x55
@@ -60,6 +65,7 @@ enum TxState {
 TxState txState = TX_IDLE;
 uint8_t seq = 0;
 unsigned long t0;
+unsigned long msgTimer = 0;
 
 /* ================== FUNÇÕES ================== */
 
@@ -136,6 +142,10 @@ void setup() {
   Serial.begin(115200);
   pinMode(BUTTON_PIN, INPUT);
 
+  /* Watchdog */
+  esp_task_wdt_init(WDT_TIMEOUT, true); // reset automático
+  esp_task_wdt_add(NULL);               // task loop()
+
   if (!initOLED()) {
     Serial.println("Falha OLED");
     while (1);
@@ -147,6 +157,9 @@ void setup() {
 /* ================== LOOP ================== */
 
 void loop() {
+
+  esp_task_wdt_reset(); // alimenta WDT
+
   switch (txState) {
 
     case TX_IDLE:
@@ -162,23 +175,23 @@ void loop() {
     case TX_WAIT_ACK:
       if (LoRa.parsePacket()) {
         if (receiveAck()) {
+          oledPrint("Mensagem recebida");
+          msgTimer = millis();
           txState = TX_SUCCESS;
         }
-      } else if (millis() - t0 > ACK_TIMEOUT) {
+      } 
+      else if (millis() - t0 > ACK_TIMEOUT) {
+        oledPrint("Mensagem nao recebida");
+        msgTimer = millis();
         txState = TX_TIMEOUT;
       }
       break;
 
     case TX_SUCCESS:
-      oledPrint("Mensagem recebida");
-      delay(500);//remover dps
-      txState = TX_IDLE;
-      break;
-
     case TX_TIMEOUT:
-      oledPrint("Mensagem nao recebida");
-      delay(500);//remover dps
-      txState = TX_IDLE;
+      if (millis() - msgTimer > MSG_HOLD_TIME) {
+        txState = TX_IDLE;
+      }
       break;
   }
 }
