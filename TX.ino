@@ -1,6 +1,6 @@
 /*
-  Controle de Bomba d'Água via LoRa
-  Módulo TX - Heltec WiFi LoRa 32 V2
+  Controle de Bomba d'Água via LoRa - LÓGICA PERSISTENTE
+  Garante que o estado da bomba coincida com a chave física.
 */
 
 #include <SPI.h>
@@ -10,43 +10,28 @@
 #include <Adafruit_SSD1306.h>
 #include <esp_task_wdt.h>
 
-/* ================== WATCHDOG ================== */
-#define WDT_TIMEOUT 5   // segundos
+/* ================== CONFIGURAÇÕES ================== */
+#define WDT_TIMEOUT    10
+#define SWITCH_PIN     13
+#define LORA_BAND      915E6
+#define ACK_TIMEOUT    1500  // Tempo esperando resposta
+#define RETRY_INTERVAL 3000  // Tempo entre tentativas após falha
 
-/* ================== OLED ================== */
+/* OLED PINS (Heltec V2) */
 #define OLED_SDA 4
 #define OLED_SCL 15
 #define OLED_RST 16
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(128, 64, &Wire, OLED_RST);
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
-
-/* ================== LORA ================== */
-#define LORA_SCK   5
-#define LORA_MISO  19
-#define LORA_MOSI  27
+/* LoRa PINS (Heltec V2) */
 #define LORA_SS    18
 #define LORA_RST   14
 #define LORA_DIO0  26
 
-#define LORA_BAND      915E6
-#define LORA_TX_POWER  15
-
-/* ================== APLICAÇÃO ================== */
-#define BUTTON_PIN   13
-#define ACK_TIMEOUT  1000
-#define MSG_HOLD_TIME 1000
-
+/* PROTOCOLO */
 #define STX 0xAA
 #define ETX 0x55
-
-enum Cmd : uint8_t {
-  CMD_ON  = 0x01,
-  CMD_OFF = 0x02,
-  ACK_ON  = 0x81,
-  ACK_OFF = 0x82
-};
+enum Cmd : uint8_t { CMD_ON = 0x01, CMD_OFF = 0x02, ACK_ON = 0x81, ACK_OFF = 0x82 };
 
 typedef struct __attribute__((packed)) {
   uint8_t stx;
@@ -55,143 +40,133 @@ typedef struct __attribute__((packed)) {
   uint8_t etx;
 } LoraPacket;
 
-enum TxState {
-  TX_IDLE,
-  TX_WAIT_ACK,
-  TX_SUCCESS,
-  TX_TIMEOUT
-};
+/* ESTADO DO SISTEMA */
+bool desiredState = HIGH; // HIGH = OFF (Pullup), LOW = ON
+bool actualStateConfirmed = false; 
+uint8_t globalSeq = 0;
+unsigned long lastTxTime = 0;
+bool waitingAck = false;
 
-TxState txState = TX_IDLE;
-uint8_t seq = 0;
-unsigned long t0;
-unsigned long msgTimer = 0;
+/* ================== FUNÇÕES AUXILIARES ================== */
 
-/* ================== FUNÇÕES ================== */
-
-void oledPrint(const char* msg) {
+void updateDisplay(const char* status, bool error = false) {
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println(msg);
+  display.setTextSize(1);
+  display.println("SISTEMA BOMBA LORA");
+  
+  display.setCursor(0, 15);
+  display.print("CHAVE: ");
+  display.println(desiredState == LOW ? "LIGAR (ON)" : "DESLIGAR (OFF)");
+
+  display.setCursor(0, 30);
+  display.print("BOMBA: ");
+  if (actualStateConfirmed) {
+    display.setTextColor(SSD1306_WHITE);
+    display.println(desiredState == LOW ? "LIGADA [OK]" : "DESLIGADA [OK]");
+  } else {
+    display.println("SINCRONIZANDO...");
+  }
+
+  display.setCursor(0, 50);
+  display.setTextSize(1);
+  if (error) display.print("(!) ERRO DE SINAL");
+  else if (waitingAck) display.print(">> Enviando comando...");
+  
   display.display();
 }
 
-bool initOLED() {
-  pinMode(OLED_RST, OUTPUT);
-  digitalWrite(OLED_RST, LOW);
-  delay(20);
-  digitalWrite(OLED_RST, HIGH);
-
-  Wire.begin(OLED_SDA, OLED_SCL);
-
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    return false;
-  }
-
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  oledPrint("OLED OK");
-  return true;
-}
-
-bool initLoRa() {
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
-  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
-
-  if (!LoRa.begin(LORA_BAND)) {
-    oledPrint("Erro LoRa");
-    return false;
-  }
-
-  LoRa.setTxPower(LORA_TX_POWER);
-  LoRa.enableCrc();
-  LoRa.setSpreadingFactor(7);
-  LoRa.setSignalBandwidth(125E3);
-  LoRa.setCodingRate4(5);
-
-  oledPrint("LoRa OK");
-  return true;
-}
-
-void sendCommand(uint8_t cmd) {
-  LoraPacket pkt = { STX, cmd, seq, ETX };
-
+void sendCommand() {
+  uint8_t cmd = (desiredState == LOW) ? CMD_ON : CMD_OFF;
+  LoraPacket pkt = { STX, cmd, globalSeq, ETX };
+  
   LoRa.beginPacket();
   LoRa.write((uint8_t*)&pkt, sizeof(pkt));
   LoRa.endPacket();
-
-  oledPrint("Comando enviado");
-}
-
-bool receiveAck() {
-  LoraPacket pkt;
-  if (LoRa.available() < sizeof(pkt)) return false;
-
-  LoRa.readBytes((uint8_t*)&pkt, sizeof(pkt));
-
-  if (pkt.stx != STX || pkt.etx != ETX) return false;
-  if (pkt.seq != seq) return false;
-
-  return (pkt.cmd == ACK_ON || pkt.cmd == ACK_OFF);
+  
+  lastTxTime = millis();
+  waitingAck = true;
 }
 
 /* ================== SETUP ================== */
 
 void setup() {
   Serial.begin(115200);
-  pinMode(BUTTON_PIN, INPUT);
+  pinMode(SWITCH_PIN, INPUT);
+  
+  // Inicializa OLED
+  pinMode(OLED_RST, OUTPUT);
+  digitalWrite(OLED_RST, LOW); delay(20); digitalWrite(OLED_RST, HIGH);
+  Wire.begin(OLED_SDA, OLED_SCL);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) while(1);
+  display.setTextColor(SSD1306_WHITE);
 
-  /* Watchdog */
-  esp_task_wdt_init(WDT_TIMEOUT, true); // reset automático
-  esp_task_wdt_add(NULL);               // task loop()
-
-  if (!initOLED()) {
-    Serial.println("Falha OLED");
-    while (1);
+  // Inicializa LoRa
+  SPI.begin(5, 19, 27, 18);
+  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(LORA_BAND)) {
+    updateDisplay("ERRO LORA");
+    while(1);
   }
+  LoRa.setSpreadingFactor(10); // Máxima robustez
+  LoRa.enableCrc();
 
-  while (!initLoRa());
+  esp_task_wdt_init(WDT_TIMEOUT, true);
+  esp_task_wdt_add(NULL);
+  
+  desiredState = digitalRead(SWITCH_PIN);
+  updateDisplay("INICIANDO...");
 }
 
 /* ================== LOOP ================== */
 
 void loop() {
+  esp_task_wdt_reset();
+  
+  bool currentSwitch = digitalRead(SWITCH_PIN);
 
-  esp_task_wdt_reset(); // alimenta WDT
+  // Se a chave mudou, resetamos a confirmação e forçamos novo envio
+  if (currentSwitch != desiredState) {
+    desiredState = currentSwitch;
+    actualStateConfirmed = false;
+    globalSeq++; // Novo ID de transação
+    sendCommand();
+  }
 
-  switch (txState) {
-
-    case TX_IDLE:
-      oledPrint("Aguardando Comando");
-      if (digitalRead(BUTTON_PIN)) {
-        seq++;
-        sendCommand(CMD_ON);
-        t0 = millis();
-        txState = TX_WAIT_ACK;
+  // Se não está confirmado, tenta enviar periodicamente
+  if (!actualStateConfirmed) {
+    if (!waitingAck) {
+      if (millis() - lastTxTime > RETRY_INTERVAL) {
+        sendCommand();
       }
-      break;
-
-    case TX_WAIT_ACK:
+    } else {
+      // Esperando ACK
       if (LoRa.parsePacket()) {
-        if (receiveAck()) {
-          oledPrint("Mensagem recebida");
-          msgTimer = millis();
-          txState = TX_SUCCESS;
+        LoraPacket ackPkt;
+        if (LoRa.available() >= sizeof(ackPkt)) {
+          LoRa.readBytes((uint8_t*)&ackPkt, sizeof(ackPkt));
+          
+          // Valida se o ACK corresponde ao comando atual
+          bool matchOn = (desiredState == LOW && ackPkt.cmd == ACK_ON);
+          bool matchOff = (desiredState == HIGH && ackPkt.cmd == ACK_OFF);
+          
+          if (ackPkt.stx == STX && ackPkt.etx == ETX && ackPkt.seq == globalSeq && (matchOn || matchOff)) {
+            actualStateConfirmed = true;
+            waitingAck = false;
+            updateDisplay("CONFIRMADO");
+          }
         }
-      } 
-      else if (millis() - t0 > ACK_TIMEOUT) {
-        oledPrint("Mensagem nao recebida");
-        msgTimer = millis();
-        txState = TX_TIMEOUT;
+      } else if (millis() - lastTxTime > ACK_TIMEOUT) {
+        waitingAck = false; // Timeout, tentará novamente no próximo RETRY_INTERVAL
+        updateDisplay("FALHA ACK", true);
       }
-      break;
+    }
+  }
 
-    case TX_SUCCESS:
-    case TX_TIMEOUT:
-      if (millis() - msgTimer > MSG_HOLD_TIME) {
-        txState = TX_IDLE;
-      }
-      break;
+  // Atualização periódica do display (opcional, para manter feedback)
+  static unsigned long lastDisplayUpdate = 0;
+  if (millis() - lastDisplayUpdate > 500) {
+    updateDisplay(actualStateConfirmed ? "OK" : "SYNCING");
+    lastDisplayUpdate = millis();
   }
 }
